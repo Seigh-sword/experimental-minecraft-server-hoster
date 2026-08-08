@@ -43,14 +43,14 @@ jobs:
           cd server
           PAPER_VERSION="${{ github.event.inputs.paper_version || '1.21.4' }}"
           PAPER_RESPONSE=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/$PAPER_VERSION")
+          PAPER_BUILD=$(echo "$PAPER_RESPONSE" | jq -r 'if .builds then .builds[-1] else empty end')
 
-          if [ -z "$PAPER_RESPONSE" ] || [ "$PAPER_RESPONSE" = "null" ]; then
-            echo "Version $PAPER_VERSION not found, falling back to 1.21"
-            PAPER_VERSION="1.21"
+          if [ -z "$PAPER_BUILD" ]; then
+            echo "Version $PAPER_VERSION not found or build unavailable, fetching latest available Paper version"
+            PAPER_VERSION=$(curl -s https://api.papermc.io/v2/projects/paper | jq -r '.versions[-1] // "1.21"')
             PAPER_RESPONSE=$(curl -s "https://api.papermc.io/v2/projects/paper/versions/$PAPER_VERSION")
+            PAPER_BUILD=$(echo "$PAPER_RESPONSE" | jq -r 'if .builds then .builds[-1] else empty end')
           fi
-
-          PAPER_BUILD=$(echo "$PAPER_RESPONSE" | jq -r '.builds | to_entries | last | .key // empty')
 
           if [ -z "$PAPER_BUILD" ]; then
             echo "Could not find any builds for Paper version $PAPER_VERSION"
@@ -81,31 +81,9 @@ jobs:
           enable-command-block=false
           pvp=true
           online-mode=true
-          difficulty=normal
           enable-rcon=false
           rcon.password=
           EOF
-
-      - name: Auto-detect latest Minecraft version
-        id: version_detect
-        run: |
-          LATEST_VERSION=$(curl -s https://api.papermc.io/v2/projects/paper | jq -r '.versions[-1] // empty')
-          if [ -n "$LATEST_VERSION" ]; then
-            echo "Detected latest Paper version: $LATEST_VERSION"
-            echo "latest_version=$LATEST_VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Could not detect latest version, using 1.21"
-            echo "latest_version=1.21" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Update default version if needed
-        run: |
-          DEFAULT_VERSION="${{ github.event.inputs.paper_version || '1.21.4' }}"
-          LATEST_VERSION="${{ steps.version_detect.outputs.latest_version }}"
-          if [ "$DEFAULT_VERSION" = "1.21.4" ] && [ "$LATEST_VERSION" != "1.21.4" ]; then
-            echo "Updating default version from 1.21.4 to $LATEST_VERSION"
-            sed -i 's/1.21.4/'"$LATEST_VERSION"'/g' .github/workflows/minecraft-server.yml
-          fi
 
       - name: Download cloudflared
         run: |
