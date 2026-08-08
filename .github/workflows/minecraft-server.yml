@@ -82,7 +82,7 @@ jobs:
       - name: Start Minecraft server
         run: |
           cd server
-          screen -dmS minecraft java -Xmx4G -Xms4G -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockDiagnosticVMOptions -XX:+DisableExplicitGC -XX:TargetSurvivorRatio=90 -XX:G1NewSizePercent=50 -XX:G1MaxNewSizePercent=80 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=32M -jar paper.jar nogui
+          screen -dmS minecraft java -Xmx12G -Xms12G -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockDiagnosticVMOptions -XX:+DisableExplicitGC -XX:TargetSurvivorRatio=90 -XX:G1NewSizePercent=50 -XX:G1MaxNewSizePercent=80 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=32M -jar paper.jar nogui
           sleep 30
 
       - name: Verify server started
@@ -99,7 +99,7 @@ jobs:
           ./cloudflared tunnel --url tcp://127.0.0.1:25565 > tunnel.log 2>&1 &
           sleep 10
 
-      - name: Extract tunnel URL
+      - name: Extract tunnel URL and show summary
         id: tunnel
         run: |
           for i in {1..20}; do
@@ -113,6 +113,8 @@ jobs:
             fi
             sleep 3
           done
+          echo "=== Minecraft Server Summary ==="
+          echo "Tunnel URL: ${{ steps.tunnel.outputs.tunnel_url || 'Not available' }}"
 
       - name: Archive and upload loop
         id: archive_loop
@@ -175,10 +177,3 @@ jobs:
         with:
           name: minecraft-world-backups
           path: server/world-*.7z
-
-      - name: Display summary
-        if: always()
-        run: |
-          echo "=== Minecraft Server Summary ==="
-          echo "Tunnel URL: ${{ steps.tunnel.outputs.tunnel_url || 'Not available' }}"
-          echo "Server stopped."
