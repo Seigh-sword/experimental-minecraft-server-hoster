@@ -124,12 +124,13 @@ jobs:
         with:
           script: |
             const tag = 'minecraft-world-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const tunnelUrl = '${{ steps.tunnel.outputs.tunnel_url }}' || 'Not available';
             const release = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
               name: 'Minecraft World ' + new Date().toISOString().slice(0, 10),
-              body: 'Automated world save from experimental Minecraft server\n\nTunnel: ' + '${{ steps.tunnel.outputs.tunnel_url || "Not available" }}',
+              body: 'Automated world save from experimental Minecraft server\n\nTunnel: ' + tunnelUrl,
               draft: false,
               prerelease: true
             });
