@@ -1,0 +1,20 @@
+# Minecraft server files
+server/
+*.7z
+*.7z.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Temporary files
+*.tmp
+*.temp
+tunnel.log
+
+# GitHub Actions
+.workaround/

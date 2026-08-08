@@ -1,0 +1,258 @@
+name: Experimental Minecraft Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_minutes:
+        description: 'How long to run the server before final save (minutes, max 300)'
+        required: false
+        default: '120'
+        type: string
+      save_interval_minutes:
+        description: 'How often to archive and upload world (minutes)'
+        required: false
+        default: '30'
+        type: string
+      paper_version:
+        description: 'PaperMC version (e.g. 1.21.4)'
+        required: false
+        default: '1.21.4'
+        type: string
+
+jobs:
+  minecraft-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full curl openjdk-21-jre-headless screen jq
+          curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Download and setup PaperMC server
+        run: |
+          mkdir -p server
+          cd server
+          PAPER_BUILD=$(curl -s https://api.papermc.io/v2/projects/paper/versions/${{ github.event.inputs.paper_version || '1.21.4' }} | jq -r '.builds | to_entries | last | .key')
+          curl -o paper.jar "https://api.papermc.io/v2/projects/paper/versions/${{ github.event.inputs.paper_version || '1.21.4' }}/builds/$PAPER_BUILD/downloads/paper-${{ github.event.inputs.paper_version || '1.21.4' }}-$PAPER_BUILD.jar"
+          echo "eula=true" > eula.txt
+
+      - name: Configure server
+        run: |
+          cat > server/server.properties << 'EOF'
+          server-ip=
+          server-port=25565
+          motd=Experimental Minecraft Server
+          max-players=20
+          view-distance=8
+          spawn-animals=true
+          spawn-monsters=true
+          spawn-npcs=true
+          generate-structures=true
+          level-type=default
+          difficulty=normal
+          gamemode=survival
+          hardcore=false
+          white-list=false
+          enable-command-block=false
+          pvp=true
+          online-mode=true
+          difficulty=normal
+          enable-rcon=false
+          rcon.password=
+          EOF
+
+      - name: Download cloudflared
+        run: |
+          curl -L -o cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+      - name: Start Minecraft server
+        run: |
+          cd server
+          screen -dmS minecraft java -Xmx16G -Xms16G -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockDiagnosticVMOptions -XX:+DisableExplicitGC -XX:MaxGCPauseMillis=50 -XX:TargetSurvivorRatio=90 -XX:G1NewSizePercent=50 -XX:G1MaxNewSizePercent=80 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=32M -jar paper.jar nogui
+          sleep 60
+
+      - name: Verify server started
+        run: |
+          for i in {1..60}; do
+            if screen -list | grep -q minecraft; then
+              echo "Server process started"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: Start Cloudflare tunnel
+        run: |
+          ./cloudflared tunnel --url tcp://127.0.0.1:25565 > tunnel.log 2>&1 &
+          sleep 20
+
+      - name: Extract tunnel URL
+        id: tunnel
+        run: |
+          sleep 10
+          for i in {1..30}; do
+            if grep -q "trycloudflare.com" tunnel.log; then
+              TUNNEL_HOST=$(grep -oP 'trycloudflare\.com:[0-9]+' tunnel.log | head -1)
+              if [ -n "$TUNNEL_HOST" ]; then
+                echo "tunnel_url=$TUNNEL_HOST" >> $GITHUB_OUTPUT
+                echo "Tunnel ready: $TUNNEL_HOST"
+                break
+              fi
+            fi
+            sleep 5
+          done
+
+      - name: Configure gh CLI
+        run: |
+          gh auth setup-git
+          echo "GH_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+          echo "GITHUB_TOKEN=${{ secrets.GITHUB_TOKEN }}" >> $GITHUB_ENV
+
+      - name: Create initial release
+        id: create_release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = 'minecraft-world-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+              name: 'Minecraft World ' + new Date().toISOString().slice(0, 10),
+              body: 'Automated world save from experimental Minecraft server\n\nTunnel: ' + '${{ steps.tunnel.outputs.tunnel_url || "Not available" }}',
+              draft: false,
+              prerelease: true
+            });
+            core.setOutput('release_id', release.data.id);
+            core.setOutput('release_tag', release.data.tag_name);
+            core.setOutput('release_url', release.data.html_url);
+
+      - name: Archive and upload loop
+        id: archive_loop
+        run: |
+          SAVE_INTERVAL=${{ github.event.inputs.save_interval_minutes || '30' }}
+          RUNTIME=${{ github.event.inputs.runtime_minutes || '120' }}
+          END_TIME=$(($(date +%s) + RUNTIME * 60))
+          SAVE_COUNT=0
+          RELEASE_TAG="${{ steps.create_release.outputs.release_tag }}"
+
+          echo "Server will run for $RUNTIME minutes, saving every $SAVE_INTERVAL minutes"
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            echo "Next save in $SAVE_INTERVAL minutes..."
+            sleep $((SAVE_INTERVAL * 60))
+
+            if [ $(date +%s) -ge $END_TIME ]; then
+              break
+            fi
+
+            SAVE_COUNT=$((SAVE_COUNT + 1))
+            TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+            echo "=== Save #$SAVE_COUNT at $TIMESTAMP ==="
+
+            echo "Saving world..."
+            screen -S minecraft -p 0 -X stuff "say Saving world...$(printf '\r')"
+            screen -S minecraft -p 0 -X stuff "save-all$(printf '\r')"
+            sleep 15
+
+            if [ ! -d "server/world" ]; then
+              echo "World folder not found, skipping save."
+              continue
+            fi
+
+            if [ ! "$(ls -A server/world)" ]; then
+              echo "World folder empty, skipping save."
+              continue
+            fi
+
+            echo "Archiving world..."
+            cd server
+            7z a -t7z -mx=9 -v1g -r "world-$TIMESTAMP.7z" world/ > /dev/null 2>&1
+
+            if [ $? -ne 0 ]; then
+              echo "Archive creation failed, skipping upload."
+              cd ..
+              continue
+            fi
+
+            ARCHIVE_SIZE=$(du -ch world-$TIMESTAMP.7z.* 2>/dev/null | grep total | cut -f1)
+            echo "Archive size: $ARCHIVE_SIZE"
+
+            echo "Uploading to release $RELEASE_TAG..."
+            UPLOAD_FAILED=0
+            for file in world-$TIMESTAMP.7z.*; do
+              if [ -f "$file" ]; then
+                echo "Uploading $file..."
+                if gh release upload "$RELEASE_TAG" "$file" --clobber 2>/dev/null; then
+                  echo "Uploaded: $file"
+                else
+                  echo "Upload failed for $file"
+                  UPLOAD_FAILED=$((UPLOAD_FAILED + 1))
+                fi
+              fi
+            done
+
+            if [ $UPLOAD_FAILED -gt 0 ]; then
+              echo "Warning: $UPLOAD_FAILED file(s) failed to upload"
+            else
+              echo "All files uploaded successfully"
+            fi
+
+            rm -f world-$TIMESTAMP.7z.*
+            cd ..
+            echo "Save #$SAVE_COUNT complete."
+          done
+
+          echo "save_count=$SAVE_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Final save and archive
+        if: always()
+        run: |
+          echo "Performing final save..."
+          if screen -list | grep -q minecraft; then
+            screen -S minecraft -p 0 -X stuff "say Saving world for final archive...$(printf '\r')"
+            screen -S minecraft -p 0 -X stuff "save-all$(printf '\r')"
+            sleep 15
+            screen -S minecraft -p 0 -X stuff "stop$(printf '\r')"
+            sleep 10
+          fi
+
+          if [ ! -d "server/world" ] || [ ! "$(ls -A server/world)" ]; then
+            echo "No world data to archive."
+            exit 0
+          fi
+
+          echo "Creating final archive..."
+          cd server
+          7z a -t7z -mx=9 -v1g -r "world-final.7z" world/ > /dev/null 2>&1
+
+          echo "Uploading final archive to release..."
+          LATEST_TAG=$(gh release list --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            for file in world-final.7z.*; do
+              if [ -f "$file" ]; then
+                gh release upload "$LATEST_TAG" "$file" --clobber 2>/dev/null || echo "Upload failed for $file"
+              fi
+            done
+          fi
+
+          echo "Final archive uploaded."
+
+      - name: Display summary
+        if: always()
+        run: |
+          echo "=== Minecraft Server Summary ==="
+          echo "Tunnel URL: ${{ steps.tunnel.outputs.tunnel_url || 'Not available' }}"
+          echo "Release: ${{ steps.create_release.outputs.release_url || 'Not available' }}"
+          echo "Saves completed: ${{ steps.archive_loop.outputs.save_count || '0' }}"
+          echo "Server stopped."
