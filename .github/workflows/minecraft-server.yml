@@ -82,7 +82,7 @@ jobs:
       - name: Start Minecraft server
         run: |
           cd server
-          screen -dmS minecraft java -Xmx6G -Xms6G -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockDiagnosticVMOptions -XX:+DisableExplicitGC -XX:MaxGCPauseMillis=50 -XX:TargetSurvivorRatio=90 -XX:G1NewSizePercent=50 -XX:G1MaxNewSizePercent=80 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=32M -jar paper.jar nogui
+          screen -dmS minecraft java -Xmx4G -Xms4G -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:MaxGCPauseMillis=200 -XX:+UnlockDiagnosticVMOptions -XX:+DisableExplicitGC -XX:TargetSurvivorRatio=90 -XX:G1NewSizePercent=50 -XX:G1MaxNewSizePercent=80 -XX:G1MixedGCCountTarget=4 -XX:InitiatingHeapOccupancyPercent=15 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1ReservePercent=20 -XX:G1HeapRegionSize=32M -jar paper.jar nogui
           sleep 30
 
       - name: Verify server started
@@ -107,6 +107,7 @@ jobs:
               TUNNEL_HOST=$(grep -oP 'trycloudflare\.com:[0-9]+' tunnel.log | head -1)
               if [ -n "$TUNNEL_HOST" ]; then
                 echo "tunnel_url=$TUNNEL_HOST" >> $GITHUB_OUTPUT
+                echo "=== CLOUDFLARE TUNNEL URL: $TUNNEL_HOST ==="
                 break
               fi
             fi
@@ -131,8 +132,13 @@ jobs:
             SAVE_COUNT=$((SAVE_COUNT + 1))
             TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-            screen -S minecraft -p 0 -X stuff "save-all$(printf '\r')"
-            sleep 10
+            if screen -list | grep -q minecraft; then
+              screen -S minecraft -p 0 -X stuff "save-all$(printf '\r')"
+              sleep 10
+            else
+              echo "Screen session lost, skipping save"
+              continue
+            fi
 
             if [ ! -d "server/world" ] || [ ! "$(ls -A server/world)" ]; then
               continue
